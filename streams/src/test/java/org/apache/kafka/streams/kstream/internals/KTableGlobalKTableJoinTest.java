@@ -18,6 +18,7 @@
 package org.apache.kafka.streams.kstream.internals;
 
 import org.apache.kafka.streams.processor.Processor;
+import org.apache.kafka.test.InMemoryKeyValueStore;
 import org.apache.kafka.test.KTableValueGetterStub;
 import org.apache.kafka.test.MockKeyValueMapper;
 import org.apache.kafka.test.MockValueJoiner;
@@ -25,101 +26,65 @@ import org.apache.kafka.test.NoOpProcessorContext;
 import org.junit.Before;
 import org.junit.Test;
 
+import static org.hamcrest.CoreMatchers.equalTo;
 import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.CoreMatchers.nullValue;
 import static org.hamcrest.MatcherAssert.assertThat;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNull;
 
 @SuppressWarnings("unchecked")
 public class KTableGlobalKTableJoinTest {
-
+    private final InMemoryKeyValueStore<String, String> joinStore = new InMemoryKeyValueStore<>("joinStore");
     private final KTableValueGetterStub<String, String> global = new KTableValueGetterStub<>();
-
     private final KTableGlobalKTableJoin<String, String, String, String, String> join
             = new KTableGlobalKTableJoin<>(new ValueGetterSupplier<>(new KTableValueGetterStub<String, String>()),
                                            new ValueGetterSupplier<>(global),
                                            MockValueJoiner.STRING_JOINER,
-                                           MockKeyValueMapper.<String, String>SelectValueMapper());
+                                           MockKeyValueMapper.<String, String>SelectValueMapper(),
+                                           "joinStore");
 
     private NoOpProcessorContext context;
 
     @Before
     public void before() {
         context = new NoOpProcessorContext();
+        context.register(joinStore, false, null);
     }
 
     @SuppressWarnings("unchecked")
     @Test
-    public void shouldNotForwardIfNewValueMapsToKeyNotInOtherStoreAndOldValueIsNull() throws Exception {
+    public void shouldNotJoinIfNewValueDoesntMapToKeyInGlobalStore() throws Exception {
         final Processor<String, Change<String>> processor = join.get();
         processor.init(context);
         processor.process("A", new Change<>("1", null));
-        final Change<String> a = (Change<String>) context.forwardedValues.get("A");
-        assertNull(a);
+        assertThat(joinStore.get("A"), is(nullValue()));
     }
 
     @Test
-    public void shouldJoinAndForwardIfKeyFromNewValueInOtherStore() throws Exception {
+    public void shouldJoinAndPutValueInJoinStoreIfKeyFromNewValueInGlobalStore() throws Exception {
         final Processor<String, Change<String>> processor = join.get();
         processor.init(context);
         global.put("1", "B");
         processor.process("A", new Change<>("1", null));
-        final Change<String> a = (Change<String>) context.forwardedValues.get("A");
-        assertEquals("1+B", a.newValue);
-        assertNull(a.oldValue);
+        assertThat(joinStore.get("A"), equalTo("1+B"));
     }
 
     @Test
-    public void shouldSendNewAndOldValuesCorrectly() throws Exception {
-        join.enableSendingOldValues();
+    public void shouldStoreDeleteIfChangeHasOldValue() throws Exception {
         final Processor<String, Change<String>> processor = join.get();
         processor.init(context);
-        global.put("1", "B");
-        global.put("2", "C");
-        processor.process("A", new Change<>("2", "1"));
-        final Change<String> a = (Change<String>) context.forwardedValues.get("A");
-        assertEquals("2+C", a.newValue);
-        assertEquals("1+B", a.oldValue);
-    }
-
-    @Test
-    public void shouldSendOldValueIfNewValueIsNullOldValueIsntNull() throws Exception {
-        join.enableSendingOldValues();
-        final Processor<String, Change<String>> processor = join.get();
-        processor.init(context);
-        global.put("1", "B");
+        processor.process("A", new Change<>("1", null));
         processor.process("A", new Change<>(null, "1"));
-        final Change<String> a = (Change<String>) context.forwardedValues.get("A");
-        assertNull(a.newValue);
-        assertEquals("1+B", a.oldValue);
-    }
-
-    @Test
-    public void shouldSendDeletesIfChangeHasOldValue() throws Exception {
-        final Processor<String, Change<String>> processor = join.get();
-        processor.init(context);
-        processor.process("A", new Change<>(null, "1"));
-        final Change<String> a = (Change<String>) context.forwardedValues.get("A");
-        assertThat(a.newValue, is(nullValue()));
-        assertThat(a.oldValue, is(nullValue()));
+        assertThat(joinStore.get("A"), is(nullValue()));
     }
 
 
     @Test
-    public void shouldNotForwardIfBothNewAndOldValuesAreNull() throws Exception {
-        final KTableGlobalKTableJoin<String, String, String, String, String> join
-                = new KTableGlobalKTableJoin<>(new ValueGetterSupplier<>(new KTableValueGetterStub<String, String>()),
-                                               new ValueGetterSupplier<>(global),
-                                               MockValueJoiner.STRING_JOINER,
-                                               MockKeyValueMapper.<String, String>SelectKeyKeyValueMapper());
-
+    public void shouldNotJoinIfBothNewAndOldValuesAreNull() throws Exception {
         global.put("1", "A");
         final Processor<String, Change<String>> processor = join.get();
         processor.init(context);
         processor.process("1", new Change<String>(null, null));
-        final Change<String> a = (Change<String>) context.forwardedValues.get("1");
-        assertNull(a);
+        assertThat(joinStore.approximateNumEntries(), is(0L));
     }
 
 

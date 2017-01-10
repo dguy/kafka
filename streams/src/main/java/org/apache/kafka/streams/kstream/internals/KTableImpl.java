@@ -31,7 +31,9 @@ import org.apache.kafka.streams.kstream.Predicate;
 import org.apache.kafka.streams.kstream.ValueJoiner;
 import org.apache.kafka.streams.kstream.ValueMapper;
 import org.apache.kafka.streams.processor.ProcessorSupplier;
+import org.apache.kafka.streams.processor.StateStoreSupplier;
 import org.apache.kafka.streams.processor.StreamPartitioner;
+import org.apache.kafka.streams.state.KeyValueStore;
 
 import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
@@ -264,8 +266,6 @@ public class KTableImpl<K, S, V> extends AbstractStream<K> implements KTable<K, 
         return doJoin(other, joiner, false, false);
     }
 
-
-
     @Override
     public <V1, R> KTable<K, R> outerJoin(final KTable<K, V1> other, final ValueJoiner<V, V1, R> joiner) {
         return doJoin(other, joiner, true, true);
@@ -276,35 +276,65 @@ public class KTableImpl<K, S, V> extends AbstractStream<K> implements KTable<K, 
         return doJoin(other, joiner, true, false);
     }
 
+    @Override
+    public <GK, GV, RV> KTable<K, RV> leftJoin(final GlobalKTable<GK, GV> globalTable,
+                                               final KeyValueMapper<K, V, GK> keyMapper,
+                                               final ValueJoiner<V, GV, RV> joiner) {
+        return leftJoin(globalTable, keyMapper, joiner, null, null);
+    }
+
     @SuppressWarnings("unchecked")
     @Override
     public <K1, V1, R> KTable<K, R> leftJoin(final GlobalKTable<K1, V1> globalTable,
                                              final KeyValueMapper<K, V, K1> keyMapper,
-                                             final ValueJoiner<V, V1, R> joiner) {
+                                             final ValueJoiner<V, V1, R> joiner,
+                                             final Serde<K> keySerde,
+                                             final Serde<R> joinResultSerde) {
         Objects.requireNonNull(globalTable, "globalTable can't be null");
         Objects.requireNonNull(keyMapper, "keyMapper can't be null");
         Objects.requireNonNull(joiner, "joiner can't be null");
         enableSendingOldValues();
         final KTableValueGetterSupplier globalValueGetterSupplier = ((GlobalKTableImpl) globalTable).valueGetterSupplier();
         final String name = topology.newName(JOINTHIS_NAME);
-        final KTableGlobalKTableLeftJoin supplier = new KTableGlobalKTableLeftJoin(valueGetterSupplier(), globalValueGetterSupplier, joiner, keyMapper);
+        final StateStoreSupplier<KeyValueStore> joinResultStoreSupplier = keyValueStore(keySerde, joinResultSerde, name + "-store");
+        final KTableGlobalKTableLeftJoin supplier = new KTableGlobalKTableLeftJoin(valueGetterSupplier(),
+                                                                                   globalValueGetterSupplier,
+                                                                                   joiner,
+                                                                                   keyMapper,
+                                                                                   joinResultStoreSupplier.name());
         topology.addProcessor(name, supplier, this.name);
+        topology.addStateStore(joinResultStoreSupplier, name);
         return new KTableImpl<>(topology, name, supplier, sourceNodes, null);
+    }
+
+    @Override
+    public <GK, VR, RV> KTable<K, RV> join(final GlobalKTable<GK, VR> globalTable,
+                                           final KeyValueMapper<K, V, GK> keyMapper,
+                                           final ValueJoiner<V, VR, RV> joiner) {
+        return join(globalTable, keyMapper, joiner, null, null);
     }
 
     @SuppressWarnings("unchecked")
     @Override
     public <K1, V1, R> KTable<K, R> join(final GlobalKTable<K1, V1> globalTable,
                                          final KeyValueMapper<K, V, K1> keyMapper,
-                                         final ValueJoiner<V, V1, R> joiner) {
+                                         final ValueJoiner<V, V1, R> joiner,
+                                         final Serde<K> keySerde,
+                                         final Serde<R> joinResultSerde) {
         Objects.requireNonNull(globalTable, "globalTable can't be null");
         Objects.requireNonNull(keyMapper, "keyMapper can't be null");
         Objects.requireNonNull(joiner, "joiner can't be null");
 
         final KTableValueGetterSupplier globalValueGetterSupplier = ((GlobalKTableImpl) globalTable).valueGetterSupplier();
         final String name = topology.newName(JOINTHIS_NAME);
-        final KTableGlobalKTableJoin supplier = new KTableGlobalKTableJoin(valueGetterSupplier(), globalValueGetterSupplier, joiner, keyMapper);
+        final StateStoreSupplier<KeyValueStore> joinResultStoreSupplier = keyValueStore(keySerde, joinResultSerde, name + "-store");
+        final KTableGlobalKTableJoin supplier = new KTableGlobalKTableJoin(valueGetterSupplier(),
+                                                                           globalValueGetterSupplier,
+                                                                           joiner,
+                                                                           keyMapper,
+                                                                           joinResultStoreSupplier.name());
         topology.addProcessor(name, supplier, this.name);
+        topology.addStateStore(joinResultStoreSupplier, name);
         return new KTableImpl<>(topology, name, supplier, sourceNodes, null);
     }
 

@@ -21,22 +21,28 @@ import org.apache.kafka.streams.kstream.KeyValueMapper;
 import org.apache.kafka.streams.kstream.ValueJoiner;
 import org.apache.kafka.streams.processor.AbstractProcessor;
 import org.apache.kafka.streams.processor.ProcessorContext;
+import org.apache.kafka.streams.state.KeyValueStore;
+import org.apache.kafka.streams.state.internals.CachedStateStore;
 
-class KTableGlobalKTableLeftJoinProcessor<K1, K2, V1, V2, R> extends AbstractProcessor<K1, Change<V1>> {
+class KTableGlobalKTableLeftJoinProcessor<K, GK, V, GV, RV> extends AbstractProcessor<K, Change<V>> {
 
-    private final KTableValueGetter<K2, V2> valueGetter;
-    private final ValueJoiner<V1, V2, R> joiner;
-    private final KeyValueMapper<K1, V1, K2> keyValueMapper;
+    private final KTableValueGetter<GK, GV> valueGetter;
+    private final ValueJoiner<V, GV, RV> joiner;
+    private final KeyValueMapper<K, V, GK> keyValueMapper;
     private final boolean sendOldValues;
+    private final String joinResultStoreName;
+    private KeyValueStore<K, RV> joinResultStore;
 
-    KTableGlobalKTableLeftJoinProcessor(final KTableValueGetter<K2, V2> valueGetter,
-                                        final ValueJoiner<V1, V2, R> joiner,
-                                        final KeyValueMapper<K1, V1, K2> keyValueMapper,
-                                        final boolean sendOldValues) {
+    KTableGlobalKTableLeftJoinProcessor(final KTableValueGetter<GK, GV> valueGetter,
+                                        final ValueJoiner<V, GV, RV> joiner,
+                                        final KeyValueMapper<K, V, GK> keyValueMapper,
+                                        final boolean sendOldValues,
+                                        final String joinResultStoreName) {
         this.valueGetter = valueGetter;
         this.joiner = joiner;
         this.keyValueMapper = keyValueMapper;
         this.sendOldValues = sendOldValues;
+        this.joinResultStoreName = joinResultStoreName;
     }
 
     @SuppressWarnings("unchecked")
@@ -44,13 +50,15 @@ class KTableGlobalKTableLeftJoinProcessor<K1, K2, V1, V2, R> extends AbstractPro
     public void init(ProcessorContext context) {
         super.init(context);
         valueGetter.init(context);
+        joinResultStore = (KeyValueStore<K, RV>) context.getStateStore(joinResultStoreName);
+        ((CachedStateStore) joinResultStore).setFlushListener(new ForwardingCacheFlushListener<K, V>(context, sendOldValues));
     }
 
     /**
      * @throws StreamsException if key is null
      */
     @Override
-    public void process(final K1 key, final Change<V1> change) {
+    public void process(final K key, final Change<V> change) {
         // the keys should never be null
         if (key == null) {
             throw new StreamsException("Record key for KTable left-join operator should not be null.");
@@ -60,20 +68,15 @@ class KTableGlobalKTableLeftJoinProcessor<K1, K2, V1, V2, R> extends AbstractPro
             return;
         }
 
-        final V2 newOtherValue = valueGetter.get(keyValueMapper.apply(key, change.newValue));
-        final V2 oldOtherValue = valueGetter.get(keyValueMapper.apply(key, change.oldValue));
-
-        final R newValue = applyJoin(change.newValue, newOtherValue, true);
-        final R oldValue = applyJoin(change.oldValue, oldOtherValue, sendOldValues);
-        context().forward(key, new Change<>(newValue, oldValue));
-
-    }
-
-    private R applyJoin(final V1 value, final V2 otherValue, final boolean shouldJoin) {
-        if (shouldJoin && value != null) {
-            return joiner.apply(value, otherValue);
+        // if new value is null we need to send (key, null) downstream
+        if (change.newValue == null) {
+            joinResultStore.put(key, null);
+            return;
         }
-        return null;
+
+        final GV newGlobalValue = valueGetter.get(keyValueMapper.apply(key, change.newValue));
+        final RV result = joiner.apply(change.newValue, newGlobalValue);
+        joinResultStore.put(key, result);
     }
 
 }

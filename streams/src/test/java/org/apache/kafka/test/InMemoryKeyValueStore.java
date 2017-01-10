@@ -15,10 +15,12 @@
 package org.apache.kafka.test;
 
 import org.apache.kafka.streams.KeyValue;
+import org.apache.kafka.streams.kstream.internals.CacheFlushListener;
 import org.apache.kafka.streams.processor.ProcessorContext;
 import org.apache.kafka.streams.processor.StateStore;
 import org.apache.kafka.streams.state.KeyValueIterator;
 import org.apache.kafka.streams.state.KeyValueStore;
+import org.apache.kafka.streams.state.internals.CachedStateStore;
 import org.apache.kafka.streams.state.internals.DelegatingPeekingKeyValueIterator;
 
 import java.util.Iterator;
@@ -27,7 +29,7 @@ import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.TreeMap;
 
-public class InMemoryKeyValueStore<K, V> implements KeyValueStore<K, V> {
+public class InMemoryKeyValueStore<K, V> implements KeyValueStore<K, V>, CachedStateStore {
     private final TreeMap<K, V> map = new TreeMap<>();
     private final String name;
     private boolean open = true;
@@ -110,6 +112,11 @@ public class InMemoryKeyValueStore<K, V> implements KeyValueStore<K, V> {
     @Override
     public KeyValueIterator<K, V> all() {
         return new DelegatingPeekingKeyValueIterator<>(name(), new TheIterator(map.entrySet().iterator()));
+    }
+
+    @Override
+    public void setFlushListener(final CacheFlushListener listener) {
+
     }
 
     private class TheIterator implements KeyValueIterator<K, V> {

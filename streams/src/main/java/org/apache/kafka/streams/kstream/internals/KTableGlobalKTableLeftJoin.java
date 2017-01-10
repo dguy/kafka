@@ -27,16 +27,19 @@ class KTableGlobalKTableLeftJoin<K1, K2, R, V1, V2> implements KTableProcessorSu
     private final KTableValueGetterSupplier<K2, V2> globalTableValueGetterSupplier;
     private final ValueJoiner<V1, V2, R> joiner;
     private final KeyValueMapper<K1, V1, K2> mapper;
+    private final String joinResultStore;
     private boolean sendOldValues;
 
     KTableGlobalKTableLeftJoin(final KTableValueGetterSupplier<K1, V1> tableValueGetterSupplier,
                                final KTableValueGetterSupplier<K2, V2> globalTableValueGetterSupplier,
                                final ValueJoiner<V1, V2, R> joiner,
-                               final KeyValueMapper<K1, V1, K2> mapper) {
+                               final KeyValueMapper<K1, V1, K2> mapper,
+                               final String joinResultStore) {
         this.valueGetterSupplier = tableValueGetterSupplier;
         this.globalTableValueGetterSupplier = globalTableValueGetterSupplier;
         this.joiner = joiner;
         this.mapper = mapper;
+        this.joinResultStore = joinResultStore;
     }
 
     @Override
@@ -44,7 +47,8 @@ class KTableGlobalKTableLeftJoin<K1, K2, R, V1, V2> implements KTableProcessorSu
         return new KTableGlobalKTableLeftJoinProcessor<>(globalTableValueGetterSupplier.get(),
                                                    joiner,
                                                    mapper,
-                                                   sendOldValues);
+                                                   sendOldValues,
+                                                   joinResultStore);
     }
 
     @Override

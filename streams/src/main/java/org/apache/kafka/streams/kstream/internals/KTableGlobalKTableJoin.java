@@ -23,32 +23,37 @@ import org.apache.kafka.streams.kstream.ValueJoiner;
 import org.apache.kafka.streams.processor.AbstractProcessor;
 import org.apache.kafka.streams.processor.Processor;
 import org.apache.kafka.streams.processor.ProcessorContext;
+import org.apache.kafka.streams.state.KeyValueStore;
+import org.apache.kafka.streams.state.internals.CachedStateStore;
 
-class KTableGlobalKTableJoin<K1, K2, R, V1, V2> implements KTableProcessorSupplier<K1, V1, R> {
+class KTableGlobalKTableJoin<K, GK, R, V, GV> implements KTableProcessorSupplier<K, V, R> {
 
-    private final KTableValueGetterSupplier<K1, V1> valueGetterSupplier;
-    private final KTableValueGetterSupplier<K2, V2> globalTableValueGetterSupplier;
-    private final ValueJoiner<V1, V2, R> joiner;
-    private final KeyValueMapper<K1, V1, K2> mapper;
+    private final KTableValueGetterSupplier<K, V> valueGetterSupplier;
+    private final KTableValueGetterSupplier<GK, GV> globalTableValueGetterSupplier;
+    private final ValueJoiner<V, GV, R> joiner;
+    private final KeyValueMapper<K, V, GK> mapper;
+    private final String joinResultStoreName;
     private boolean sendOldValues;
 
-    KTableGlobalKTableJoin(final KTableValueGetterSupplier<K1, V1> tableValueGetterSupplier,
-                           final KTableValueGetterSupplier<K2, V2> globalTableValueGetterSupplier,
-                           final ValueJoiner<V1, V2, R> joiner,
-                           final KeyValueMapper<K1, V1, K2> mapper) {
+    KTableGlobalKTableJoin(final KTableValueGetterSupplier<K, V> tableValueGetterSupplier,
+                           final KTableValueGetterSupplier<GK, GV> globalTableValueGetterSupplier,
+                           final ValueJoiner<V, GV, R> joiner,
+                           final KeyValueMapper<K, V, GK> mapper,
+                           final String joinResultStoreName) {
         this.valueGetterSupplier = tableValueGetterSupplier;
         this.globalTableValueGetterSupplier = globalTableValueGetterSupplier;
         this.joiner = joiner;
         this.mapper = mapper;
+        this.joinResultStoreName = joinResultStoreName;
     }
 
     @Override
-    public Processor<K1, Change<V1>> get() {
+    public Processor<K, Change<V>> get() {
         return new KTableGlobalKTableJoinProcessor(globalTableValueGetterSupplier.get());
     }
 
     @Override
-    public KTableValueGetterSupplier<K1, R> view() {
+    public KTableValueGetterSupplier<K, R> view() {
         return new KTableGlobalKTableJoinGetterSupplier();
     }
 
@@ -57,10 +62,10 @@ class KTableGlobalKTableJoin<K1, K2, R, V1, V2> implements KTableProcessorSuppli
         sendOldValues = true;
     }
 
-    private class KTableGlobalKTableJoinGetterSupplier implements KTableValueGetterSupplier<K1, R> {
+    private class KTableGlobalKTableJoinGetterSupplier implements KTableValueGetterSupplier<K, R> {
 
         @Override
-        public KTableValueGetter<K1, R> get() {
+        public KTableValueGetter<K, R> get() {
             return new KTableKTableJoinValueGetter<>(valueGetterSupplier.get(),
                                                      globalTableValueGetterSupplier.get(),
                                                      joiner,
@@ -74,26 +79,29 @@ class KTableGlobalKTableJoin<K1, K2, R, V1, V2> implements KTableProcessorSuppli
     }
 
 
-    private class KTableGlobalKTableJoinProcessor extends AbstractProcessor<K1, Change<V1>> {
+    private class KTableGlobalKTableJoinProcessor extends AbstractProcessor<K, Change<V>> {
 
-        private final KTableValueGetter<K2, V2> valueGetter;
+        private final KTableValueGetter<GK, GV> valueGetter;
+        private KeyValueStore<K, R> joinResultStore;
 
-        KTableGlobalKTableJoinProcessor(final KTableValueGetter<K2, V2> valueGetter) {
+        KTableGlobalKTableJoinProcessor(final KTableValueGetter<GK, GV> valueGetter) {
             this.valueGetter = valueGetter;
         }
 
         @SuppressWarnings("unchecked")
         @Override
-        public void init(ProcessorContext context) {
+        public void init(final ProcessorContext context) {
             super.init(context);
             valueGetter.init(context);
+            joinResultStore = (KeyValueStore<K, R>) context.getStateStore(joinResultStoreName);
+            ((CachedStateStore) joinResultStore).setFlushListener(new ForwardingCacheFlushListener<K, V>(context, sendOldValues));
         }
 
         /**
          * @throws StreamsException if key is null
          */
         @Override
-        public void process(final K1 key, final Change<V1> change) {
+        public void process(final K key, final Change<V> change) {
             // the keys should never be null
             if (key == null) {
                 throw new StreamsException("Record key for KTable join operator should not be null.");
@@ -103,22 +111,18 @@ class KTableGlobalKTableJoin<K1, K2, R, V1, V2> implements KTableProcessorSuppli
                 return;
             }
 
-            final V2 newOtherValue = valueGetter.get(mapper.apply(key, change.newValue));
-            final V2 oldOtherValue = valueGetter.get(mapper.apply(key, change.oldValue));
-
-
-            if (newOtherValue != null || change.oldValue != null) {
-                context().forward(key, new Change<>(doJoin(change.newValue, newOtherValue, true),
-                                                    doJoin(change.oldValue, oldOtherValue, sendOldValues)));
+            if (change.newValue == null) {
+                joinResultStore.put(key, null);
+                return;
             }
 
-        }
+            final GV newOtherValue = valueGetter.get(mapper.apply(key, change.newValue));
 
-        private R doJoin(final V1 value, final V2 other, boolean shouldJoin) {
-            if (shouldJoin && value != null && other != null) {
-                return joiner.apply(value, other);
+            if (newOtherValue != null) {
+                final R result = joiner.apply(change.newValue, newOtherValue);
+                joinResultStore.put(key, result);
             }
-            return null;
+
         }
 
     }

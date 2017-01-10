@@ -130,14 +130,22 @@ public class GlobalKTableIntegrationTest {
 
     @Test
     public void shouldKTableGlobalKTableLeftJoin() throws Exception {
-        final KTable<String, String> tableGlobalTableJoin = table.leftJoin(globalTable, keyMapper, joiner);
+        final KTable<String, String> tableGlobalTableJoin = table.leftJoin(globalTable,
+                                                                           keyMapper,
+                                                                           joiner,
+                                                                           Serdes.String(),
+                                                                           Serdes.String());
         tableGlobalTableJoin.foreach(foreachAction);
         runAndVerifyLeftJoin(inputTable);
     }
 
     @Test
     public void shouldKTableGlobalKTableJoin() throws Exception {
-        final KTable<String, String> tableGlobalTableJoin = table.join(globalTable, keyMapper, joiner);
+        final KTable<String, String> tableGlobalTableJoin = table.join(globalTable,
+                                                                       keyMapper,
+                                                                       joiner,
+                                                                       Serdes.String(),
+                                                                       Serdes.String());
         tableGlobalTableJoin.foreach(foreachAction);
         runAndVerifyJoin(inputTable);
     }

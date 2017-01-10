@@ -27,8 +27,8 @@ import java.util.Map;
 import java.util.Properties;
 
 public class NoOpProcessorContext extends AbstractProcessorContext {
+    private final Map<String, StateStore> stores = new HashMap<>();
     public boolean initialized;
-    public Map forwardedValues = new HashMap();
 
     public NoOpProcessorContext() {
         super(new TaskId(1, 1), "appId", streamsConfig(), null, null, null);
@@ -43,7 +43,7 @@ public class NoOpProcessorContext extends AbstractProcessorContext {
 
     @Override
     public StateStore getStateStore(final String name) {
-        return null;
+        return stores.get(name);
     }
 
     @Override
@@ -53,7 +53,6 @@ public class NoOpProcessorContext extends AbstractProcessorContext {
 
     @Override
     public <K, V> void forward(final K key, final V value) {
-        forwardedValues.put(key, value);
     }
 
     @Override
@@ -77,6 +76,6 @@ public class NoOpProcessorContext extends AbstractProcessorContext {
 
     @Override
     public void register(final StateStore store, final boolean loggingEnabled, final StateRestoreCallback stateRestoreCallback) {
-        // no-op
+        stores.put(store.name(), store);
     }
 }
