@@ -110,14 +110,16 @@ class AssignedTasks {
 
     void initializeNewTasks() {
         if (!created.isEmpty()) {
-            log.trace("{} Initializing {}s {}", logPrefix, taskTypeName, created.keySet());
+            log.info("{} Initializing {}s {}", logPrefix, taskTypeName, created.keySet());
         }
         for (final Iterator<Map.Entry<TaskId, Task>> it = created.entrySet().iterator(); it.hasNext(); ) {
             final Map.Entry<TaskId, Task> entry = it.next();
             try {
                 if (!entry.getValue().initialize()) {
+                    log.info("{} transition new task {} to restoring changelog partitions {}", logPrefix, entry.getKey(), entry.getValue().changelogPartitions());
                     restoring.put(entry.getKey(), entry.getValue());
                 } else {
+                    log.info("{} transition new task {} to running", logPrefix, entry.getKey());
                     transitionToRunning(entry.getValue());
                 }
                 it.remove();
@@ -139,13 +141,20 @@ class AssignedTasks {
             final Map.Entry<TaskId, Task> entry = it.next();
             Task task = entry.getValue();
             if (restoredPartitions.containsAll(task.changelogPartitions())) {
+                log.info("{} task_id {} restoration complete", logPrefix, task.id());
                 transitionToRunning(task);
                 resume.addAll(task.partitions());
                 it.remove();
+            } else {
+                final HashSet<TopicPartition> outstanding = new HashSet<>(task.changelogPartitions());
+                outstanding.removeAll(restoredPartitions);
+                log.info("{} task_id {} has outstanding partitions {} restored {}", logPrefix, task.id(), outstanding, restored);
             }
         }
         if (allTasksRunning()) {
             restoredPartitions.clear();
+        } else {
+            log.info("{} not running tasks created: {}, restoring: {}, suspended:{}", logPrefix, created.keySet(), restoring.keySet(), suspended.keySet());
         }
         return resume;
     }

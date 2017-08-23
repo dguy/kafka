@@ -34,6 +34,7 @@ import org.hamcrest.CoreMatchers;
 import org.junit.Before;
 import org.junit.Test;
 
+import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -330,6 +331,15 @@ public class StoreChangelogReaderTest {
         changelogReader.restore();
 
         assertThat(callback.restored, CoreMatchers.equalTo(Utils.mkList(KeyValue.pair(bytes, bytes), KeyValue.pair(bytes, bytes))));
+    }
+
+    @Test
+    public void shouldCompleteImmediatelyWhenEndOffsetIs0() {
+        final Collection<TopicPartition> expected = Collections.singletonList(topicPartition);
+        setupConsumer(0, topicPartition);
+        changelogReader.register(new StateRestorer(topicPartition, restoreListener, null, Long.MAX_VALUE, true, "store"));
+        final Collection<TopicPartition> restored = changelogReader.restore();
+        assertThat(restored, equalTo(expected));
     }
 
     private void setupConsumer(final long messages, final TopicPartition topicPartition) {
