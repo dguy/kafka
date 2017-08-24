@@ -131,9 +131,6 @@ class AssignedTasks {
     }
 
     Set<TopicPartition> updateRestored(final Collection<TopicPartition> restored) {
-        if (restored.isEmpty()) {
-            return Collections.emptySet();
-        }
         log.trace("{} {} partitions restored for {}", logPrefix, taskTypeName, restored);
         final Set<TopicPartition> resume = new HashSet<>();
         restoredPartitions.addAll(restored);
