@@ -44,6 +44,7 @@ import static org.apache.kafka.test.MockStateRestoreListener.RESTORE_END;
 import static org.apache.kafka.test.MockStateRestoreListener.RESTORE_START;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.core.IsEqual.equalTo;
+import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
 public class StoreChangelogReaderTest {
@@ -342,13 +343,45 @@ public class StoreChangelogReaderTest {
         assertThat(restored, equalTo(expected));
     }
 
+    @Test
+    public void shouldRestorePartitionsRegisteredPostInitialization() {
+        final MockRestoreCallback callbackTwo = new MockRestoreCallback();
+        final CompositeRestoreListener restoreListener2 = new CompositeRestoreListener(callbackTwo);
+
+        setupConsumer(1, topicPartition);
+        consumer.updateEndOffsets(Collections.singletonMap(topicPartition, 10L));
+        changelogReader.register(new StateRestorer(topicPartition, restoreListener, null, Long.MAX_VALUE, false,
+                                                   "storeName"));
+
+        assertTrue(changelogReader.restore().isEmpty());
+
+        final TopicPartition postInitialization = new TopicPartition("other", 0);
+        consumer.updateBeginningOffsets(Collections.singletonMap(postInitialization, 0L));
+        consumer.updateEndOffsets(Collections.singletonMap(postInitialization, 3L));
+
+        changelogReader.register(new StateRestorer(postInitialization, restoreListener2, null, Long.MAX_VALUE, false, "otherStore"));
+
+        addRecords(9, topicPartition, 1);
+
+        final Collection<TopicPartition> expected = Utils.mkList(topicPartition, postInitialization);
+
+        consumer.assign(expected);
+        addRecords(3, postInitialization, 0);
+        assertThat(changelogReader.restore(), equalTo(expected));
+        assertThat(callback.restored.size(), equalTo(10));
+        assertThat(callbackTwo.restored.size(), equalTo(3));
+    }
+
     private void setupConsumer(final long messages, final TopicPartition topicPartition) {
         assignPartition(messages, topicPartition);
-
-        for (int i = 0; i < messages; i++) {
-            consumer.addRecord(new ConsumerRecord<>(topicPartition.topic(), topicPartition.partition(), i, new byte[0], new byte[0]));
-        }
+        addRecords(messages, topicPartition, 0);
         consumer.assign(Collections.<TopicPartition>emptyList());
+    }
+
+    private void addRecords(final long messages, final TopicPartition topicPartition, final int startingOffset) {
+        for (int i = 0; i < messages; i++) {
+            consumer.addRecord(new ConsumerRecord<>(topicPartition.topic(), topicPartition.partition(), startingOffset + i, new byte[0], new byte[0]));
+        }
     }
 
     private void assignPartition(final long messages, final TopicPartition topicPartition) {

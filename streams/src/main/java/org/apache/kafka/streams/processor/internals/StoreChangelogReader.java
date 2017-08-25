@@ -158,14 +158,17 @@ public class StoreChangelogReader implements ChangelogReader {
             TopicPartition topicPartition = entry.getKey();
             Long offset = entry.getValue();
             final StateRestorer restorer = stateRestorers.get(topicPartition);
-            if (restorer.checkpoint() >= offset) {
-                restorer.setRestoredOffset(restorer.checkpoint());
-            } else if (restorer.offsetLimit() == 0 || endOffsets.get(topicPartition) == 0) {
-                restorer.setRestoredOffset(0);
-            } else {
-                newTasksNeedingRestoration.put(topicPartition, restorer);
-                final Long endOffset = endOffsets.get(topicPartition);
-                restorer.restoreStarted(restorer.startingOffset(), endOffset);
+            // might be null as has was initialized in a previous invocation.
+            if (restorer != null) {
+                if (restorer.checkpoint() >= offset) {
+                    restorer.setRestoredOffset(restorer.checkpoint());
+                } else if (restorer.offsetLimit() == 0 || endOffsets.get(topicPartition) == 0) {
+                    restorer.setRestoredOffset(0);
+                } else {
+                    newTasksNeedingRestoration.put(topicPartition, restorer);
+                    final Long endOffset = endOffsets.get(topicPartition);
+                    restorer.restoreStarted(restorer.startingOffset(), endOffset);
+                }
             }
         }
 
