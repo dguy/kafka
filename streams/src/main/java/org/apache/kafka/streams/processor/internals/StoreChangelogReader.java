@@ -50,6 +50,7 @@ public class StoreChangelogReader implements ChangelogReader {
     private final StateRestoreListener stateRestoreListener;
     private final Map<TopicPartition, StateRestorer> needsRestoring = new HashMap<>();
     private final Map<TopicPartition, Long> endOffsets = new HashMap<>();
+    private final Map<TopicPartition, StateRestorer> addedPostInitialization = new HashMap<>();
     private boolean initialized = false;
 
     public StoreChangelogReader(final String threadId, final Consumer<byte[], byte[]> consumer, final Time time,
@@ -103,13 +104,23 @@ public class StoreChangelogReader implements ChangelogReader {
     public void register(final StateRestorer restorer) {
         restorer.setGlobalRestoreListener(stateRestoreListener);
         stateRestorers.put(restorer.partition(), restorer);
+        // if it has already been initialized which can happen if there was a lock exception
+        // so some tasks may have been restored
+        if (initialized) {
+            addedPostInitialization.put(restorer.partition(), restorer);
+        }
     }
 
 
     public Collection<TopicPartition> restore() {
         final List<TopicPartition> completed = new ArrayList<>();
         if (!initialized) {
-            completed.addAll(initialize());
+            needsRestoring.clear();
+            completed.addAll(initialize(stateRestorers));
+        }
+
+        if (!addedPostInitialization.isEmpty()) {
+            completed.addAll(initialize(addedPostInitialization));
         }
 
         if (needsRestoring.isEmpty()) {
@@ -134,8 +145,9 @@ public class StoreChangelogReader implements ChangelogReader {
         return completed;
     }
 
-    private Collection<TopicPartition> initialize() {
-        needsRestoring.clear();
+    private Collection<TopicPartition> initialize(final Map<TopicPartition, StateRestorer> stateRestorers) {
+        final Map<TopicPartition, StateRestorer> newTasksNeedingRestoration = new HashMap<>();
+
         if (!consumer.subscription().isEmpty()) {
             throw new IllegalStateException(String.format("Restore consumer should have not subscribed to any partitions (%s) beforehand", consumer.subscription()));
         }
@@ -151,7 +163,7 @@ public class StoreChangelogReader implements ChangelogReader {
             } else if (restorer.offsetLimit() == 0 || endOffsets.get(topicPartition) == 0) {
                 restorer.setRestoredOffset(0);
             } else {
-                needsRestoring.put(topicPartition, restorer);
+                newTasksNeedingRestoration.put(topicPartition, restorer);
                 final Long endOffset = endOffsets.get(topicPartition);
                 restorer.restoreStarted(restorer.startingOffset(), endOffset);
             }
@@ -159,9 +171,11 @@ public class StoreChangelogReader implements ChangelogReader {
 
         log.debug("{} Starting restoring state stores from changelog topics {}", logPrefix, needsRestoring.keySet());
 
-        consumer.assign(needsRestoring.keySet());
+        final Set<TopicPartition> assignment = new HashSet<>(consumer.assignment());
+        assignment.addAll(newTasksNeedingRestoration.keySet());
+        consumer.assign(assignment);
         final List<StateRestorer> needsPositionUpdate = new ArrayList<>();
-        for (final StateRestorer restorer : needsRestoring.values()) {
+        for (final StateRestorer restorer : newTasksNeedingRestoration.values()) {
             if (restorer.checkpoint() != StateRestorer.NO_CHECKPOINT) {
                 consumer.seek(restorer.partition(), restorer.checkpoint());
                 logRestoreOffsets(restorer.partition(),
@@ -185,7 +199,8 @@ public class StoreChangelogReader implements ChangelogReader {
         }
 
         final Set<TopicPartition> completed = new HashSet<>(stateRestorers.keySet());
-        completed.removeAll(needsRestoring.keySet());
+        completed.removeAll(newTasksNeedingRestoration.keySet());
+        needsRestoring.putAll(newTasksNeedingRestoration);
         initialized = true;
         return completed;
     }

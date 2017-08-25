@@ -390,6 +390,13 @@ public class AssignedTasksTest {
         EasyMock.verify(t1);
     }
 
+    @Test
+    public void should() {
+        final Task t2 = EasyMock.createNiceMock(Task.class);
+        assignedTasks.addNewTask(t1);
+        assignedTasks.addNewTask(t2);
+    }
+
     private void addAndInitTask() {
         assignedTasks.addNewTask(t1);
         assignedTasks.initializeNewTasks();
