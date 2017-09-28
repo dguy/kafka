@@ -29,6 +29,7 @@ import org.apache.kafka.clients.producer.RecordMetadata;
 import org.apache.kafka.common.PartitionInfo;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.errors.SerializationException;
+import org.apache.kafka.common.errors.TimeoutException;
 import org.apache.kafka.common.requests.IsolationLevel;
 import org.apache.kafka.common.serialization.ByteArrayDeserializer;
 import org.apache.kafka.common.serialization.IntegerDeserializer;
@@ -54,9 +55,14 @@ import java.util.Set;
 public class EosTestDriver extends SmokeTestUtil {
 
     private static final int MAX_NUMBER_OF_KEYS = 100;
-    private static final long MAX_IDLE_TIME_MS = 300000L;
+    private static final long MAX_IDLE_TIME_MS = 600000L;
 
     private static boolean isRunning = true;
+    private static int numRecordsProduced = 0;
+
+    static synchronized void updateNumRecordsProduces(final int delta) {
+        numRecordsProduced += delta;
+    }
 
     static void generate(final String kafka) {
 
@@ -78,7 +84,6 @@ public class EosTestDriver extends SmokeTestUtil {
 
         final Random rand = new Random(System.currentTimeMillis());
 
-        int numRecordsProduced = 0;
         while (isRunning) {
             final String key = "" + rand.nextInt(MAX_NUMBER_OF_KEYS);
             final int value = rand.nextInt(10000);
@@ -89,13 +94,22 @@ public class EosTestDriver extends SmokeTestUtil {
                 @Override
                 public void onCompletion(final RecordMetadata metadata, final Exception exception) {
                     if (exception != null) {
-                        exception.printStackTrace();
-                        Exit.exit(1);
+                        exception.printStackTrace(System.err);
+                        System.err.flush();
+                        if (exception instanceof TimeoutException) {
+                            try {
+                                // message == org.apache.kafka.common.errors.TimeoutException: Expiring 4 record(s) for data-0: 30004 ms has passed since last attempt plus backoff time
+                                final int expired = Integer.parseInt(exception.getMessage().split(" ")[2]);
+                                updateNumRecordsProduces(-expired);
+                            } catch (Exception ignore) {
+                                // ignored
+                            }
+                        }
                     }
                 }
             });
 
-            numRecordsProduced++;
+            updateNumRecordsProduces(1);
             if (numRecordsProduced % 1000 == 0) {
                 System.out.println(numRecordsProduced + " records produced");
             }
@@ -103,6 +117,25 @@ public class EosTestDriver extends SmokeTestUtil {
         }
         producer.close();
         System.out.println(numRecordsProduced + " records produced");
+
+        final Properties props = new Properties();
+        props.put(ConsumerConfig.CLIENT_ID_CONFIG, "verifier");
+        props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, kafka);
+        props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, ByteArrayDeserializer.class);
+        props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, ByteArrayDeserializer.class);
+        props.put(ConsumerConfig.ISOLATION_LEVEL_CONFIG, IsolationLevel.READ_COMMITTED.toString().toLowerCase(Locale.ROOT));
+
+        try (final KafkaConsumer<byte[], byte[]> consumer = new KafkaConsumer<>(props)) {
+            final List<TopicPartition> partitions = getAllPartitions(consumer, "data");
+            System.out.println("Partitions: " + partitions);
+            consumer.assign(partitions);
+            consumer.seekToEnd(partitions);
+
+            for (final TopicPartition tp : partitions) {
+                System.out.println("End-offset for " + tp + " is " + consumer.position(tp));
+            }
+        }
+        System.out.flush();
     }
 
     public static void verify(final String kafka, final boolean withRepartitioning) {
@@ -240,8 +273,10 @@ public class EosTestDriver extends SmokeTestUtil {
                                                                                                      final Map<TopicPartition, Long> readEndOffsets,
                                                                                                      final boolean withRepartitioning,
                                                                                                      final boolean isInputTopic) {
+        System.err.println("read end offset: " + readEndOffsets);
         final Map<String, Map<TopicPartition, List<ConsumerRecord<byte[], byte[]>>>> recordPerTopicPerPartition = new HashMap<>();
-
+        final Map<TopicPartition, Long> maxReceivedOffsetPerPartition = new HashMap<>();
+        final Map<TopicPartition, Long> maxConsumerPositionPerPartition = new HashMap<>();
         long maxWaitTime = System.currentTimeMillis() + MAX_IDLE_TIME_MS;
         boolean allRecordsReceived = false;
         while (!allRecordsReceived && System.currentTimeMillis() < maxWaitTime) {
@@ -250,6 +285,7 @@ public class EosTestDriver extends SmokeTestUtil {
             for (final ConsumerRecord<byte[], byte[]> record : receivedRecords) {
                 maxWaitTime = System.currentTimeMillis() + MAX_IDLE_TIME_MS;
                 final TopicPartition tp = new TopicPartition(record.topic(), record.partition());
+                maxReceivedOffsetPerPartition.put(tp, record.offset());
                 final long readEndOffset = readEndOffsets.get(tp);
                 if (record.offset() < readEndOffset) {
                     addRecord(record, recordPerTopicPerPartition, withRepartitioning);
@@ -257,7 +293,10 @@ public class EosTestDriver extends SmokeTestUtil {
                     throw new RuntimeException("FAIL: did receive more records than expected for " + tp
                         + " (expected EOL offset: " + readEndOffset + "; current offset: " + record.offset());
                 }
-                if (consumer.position(tp) >= readEndOffset) {
+            }
+            for (final TopicPartition tp : readEndOffsets.keySet()) {
+                maxConsumerPositionPerPartition.put(tp, consumer.position(tp));
+                if (consumer.position(tp) >= readEndOffsets.get(tp)) {
                     consumer.pause(Collections.singletonList(tp));
                 }
             }
@@ -266,7 +305,10 @@ public class EosTestDriver extends SmokeTestUtil {
         }
 
         if (!allRecordsReceived) {
-            throw new RuntimeException("FAIL: did not receive all records after 30 sec idle time.");
+            System.err.println("Pause partitions (ie, received all data): " + consumer.paused());
+            System.err.println("Max received offset per partition: " + maxReceivedOffsetPerPartition);
+            System.err.println("Max consumer position per partition: " + maxConsumerPositionPerPartition);
+            throw new RuntimeException("FAIL: did not receive all records after 60 sec idle time.");
         }
 
         return recordPerTopicPerPartition;
